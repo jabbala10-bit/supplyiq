@@ -1,0 +1,195 @@
+# SupplyIQ - Kubernetes manifests.
+#
+# The API tier is stateless (each solve is independent; SQLite holds
+# solved plans for later copilot lookup) and can run multiple replicas
+# safely for the solver routes. The copilot routes share the same
+# SQLite-backed plan storage, so as with StreamGuardIQ's ADR-006 and
+# RecoIQ's note on the same topic, a production deployment scaling
+# beyond a single API replica should migrate plan storage to Postgres
+# to avoid SQLite single-writer contention.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supplyiq-api
+  labels:
+    app: supplyiq-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: supplyiq-api
+  template:
+    metadata:
+      labels:
+        app: supplyiq-api
+    spec:
+      containers:
+        - name: api
+          image: supplyiq-api:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: ENVIRONMENT
+              value: "production"
+            - name: OLLAMA_BASE_URL
+              value: "http://supplyiq-ollama:11434"
+            - name: SQLITE_PATH
+              value: "/app/data/supplyiq.db"
+            - name: API_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: supplyiq-secrets
+                  key: api-auth-token
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: supplyiq-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: supplyiq-api
+spec:
+  selector:
+    app: supplyiq-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: supplyiq-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supplyiq-ollama
+  labels:
+    app: supplyiq-ollama
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: supplyiq-ollama
+  template:
+    metadata:
+      labels:
+        app: supplyiq-ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+          volumeMounts:
+            - name: ollama-models
+              mountPath: /root/.ollama
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              cpu: "4"
+              memory: "12Gi"
+      volumes:
+        - name: ollama-models
+          persistentVolumeClaim:
+            claimName: supplyiq-ollama-models-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: supplyiq-ollama
+spec:
+  selector:
+    app: supplyiq-ollama
+  ports:
+    - port: 11434
+      targetPort: 11434
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: supplyiq-ollama-models-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supplyiq-ui
+  labels:
+    app: supplyiq-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: supplyiq-ui
+  template:
+    metadata:
+      labels:
+        app: supplyiq-ui
+    spec:
+      containers:
+        - name: ui
+          image: supplyiq-ui:latest
+          ports:
+            - containerPort: 7860
+          env:
+            - name: SUPPLYIQ_API_URL
+              value: "http://supplyiq-api:8000"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: supplyiq-ui
+spec:
+  selector:
+    app: supplyiq-ui
+  ports:
+    - port: 7860
+      targetPort: 7860
+  type: LoadBalancer

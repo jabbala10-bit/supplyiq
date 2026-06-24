@@ -1,0 +1,57 @@
+# SupplyIQ - full local stack: API, UI, Ollama (for the copilot).
+#
+# Usage:
+#   docker compose -f deployment/docker/docker-compose.yml up -d
+#   docker compose -f deployment/docker/docker-compose.yml exec ollama ollama pull llama3.1:8b
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: supplyiq-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile
+    container_name: supplyiq-api
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - API_AUTH_TOKEN=${API_AUTH_TOKEN}
+      - SQLITE_PATH=/app/data/supplyiq.db
+      - LOG_FORMAT=json
+    volumes:
+      - supplyiq_data:/app/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile.ui
+    container_name: supplyiq-ui
+    ports:
+      - "7860:7860"
+    environment:
+      - SUPPLYIQ_API_URL=http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  ollama_models:
+  supplyiq_data:
